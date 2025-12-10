@@ -1,0 +1,97 @@
+name: bestbuy-order-service CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+env:
+  DOCKER_IMAGE_NAME: ${{ vars.DOCKER_IMAGE_NAME }}
+  DEPLOYMENT_NAME:   ${{ vars.DEPLOYMENT_NAME }}
+  CONTAINER_NAME:    ${{ vars.CONTAINER_NAME }}
+  DOCKER_USERNAME:   ${{ secrets.DOCKER_USERNAME }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          IMAGE_TAG=${GITHUB_SHA}
+          echo "Building image ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}"
+          docker build -t ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} .
+
+      - name: Push Docker image
+        run: |
+          IMAGE_TAG=${GITHUB_SHA}
+          docker push ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tests (placeholder)
+        run: |
+          npm install
+          # Si tu as des tests: npm test
+          echo "No automated tests defined yet."
+
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Tag image as latest
+        run: |
+          IMAGE_TAG=${GITHUB_SHA}
+          docker pull ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
+          docker tag  ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG} \
+                      ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:latest
+          docker push ${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:latest
+
+  deploy:
+      runs-on: ubuntu-latest
+      needs: release
+      steps:
+      - name: Create kube config directory
+        run: |
+          mkdir -p $HOME/.kube
+
+      - name: Set up kubectl from KUBE_CONFIG_DATA
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          echo "$KUBE_CONFIG_DATA" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Update image in AKS deployment
+        run: |
+          IMAGE_TAG=${GITHUB_SHA}
+          NEW_IMAGE=${DOCKER_USERNAME}/${DOCKER_IMAGE_NAME}:${IMAGE_TAG}
+          echo "Updating deployment ${DEPLOYMENT_NAME}, container ${CONTAINER_NAME} to image ${NEW_IMAGE}"
+
+          kubectl -n bestbuy set image deployment/${DEPLOYMENT_NAME} \
+            ${CONTAINER_NAME}=${NEW_IMAGE}
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n bestbuy rollout status deployment/${DEPLOYMENT_NAME} --timeout=120s
+
