@@ -3,6 +3,8 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const { ServiceBusClient } = require("@azure/service-bus");
+
 dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 4001;
@@ -20,6 +22,63 @@ mongoose
   .catch((err) => {
     console.error("[Order-Service] MongoDB connection error:", err);
   });
+// ---------- Azure Service Bus setup ---------- //
+const sbConnectionString = process.env.SERVICE_BUS_CONNECTION_STRING;
+const sbQueueName = process.env.SERVICE_BUS_QUEUE_NAME;
+let sbClient = null;
+let sbSender = null;
+// Initialize Service Bus client & sender
+async function initServiceBus() {
+  try {
+    if (!sbConnectionString || !sbQueueName) {
+      console.warn(
+        "[ServiceBus] Missing SERVICE_BUS_CONNECTION_STRING or SERVICE_BUS_QUEUE_NAME. " +
+          "OrderCreated messages will NOT be sent."
+      );
+      return;
+    }
+
+    sbClient = new ServiceBusClient(sbConnectionString);
+    sbSender = sbClient.createSender(sbQueueName);
+
+    console.log("[ServiceBus] Connected and sender created for queue:", sbQueueName);
+  } catch (err) {
+    console.error("[ServiceBus] Failed to initialize:", err.message);
+  }
+}
+
+// Call initialization when the app starts
+initServiceBus();
+
+// Function to send OrderCreated message
+
+async function sendOrderCreatedMessage(order) {
+  try {
+    if (!sbSender) {
+      console.warn("[ServiceBus] Sender is not initialized. Skipping message send.");
+      return;
+    }
+
+    const payload = {
+      orderId: order._id,
+      customerEmail: order.customerEmail || null,
+      items: order.items || [],
+      totalAmount: order.totalAmount || 0,
+      status: order.status,
+      createdAt: order.createdAt || new Date().toISOString(),
+    };
+
+    await sbSender.sendMessages({
+      body: payload,
+      contentType: "application/json",
+    });
+
+    console.log("[ServiceBus] OrderCreated message sent for order:", order._id.toString());
+  } catch (err) {
+    console.error("[ServiceBus] Failed to send OrderCreated message:", err.message);
+  }
+}
+
 
 // ----- Mongoose models -----
 // Product model (from product-service)
@@ -128,6 +187,16 @@ app.post("/api/orders", async (req, res) => {
     });
 
     const savedOrder = await newOrder.save();
+    // Send OrderCreated message to Service Bus
+     sendOrderCreatedMessage(savedOrder).catch((err) => {
+      console.error(
+        "[ServiceBus] Error in sendOrderCreatedMessage:",
+        err.message
+      );
+    });
+
+    
+
     // Decrease stock for each product
     for (const item of orderItems) {
       await Product.updateOne(

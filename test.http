@@ -1,0 +1,11 @@
+POST http://localhost:4001/api/orders
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "productId": "6934b3cbc6d591219eb214a2",
+      "quantity": 1
+    }
+  ]
+}
